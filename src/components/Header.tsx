@@ -143,7 +143,7 @@ const Header = () => {
   			const dismissedLongEnough = !lastDismissed || Date.now() - parseInt(lastDismissed) > THIRTY_DAYS;
 
   			if (isAdmin && !isLocalhost && dismissedLongEnough) {
-  			  showRegistrationModal();
+  			  // showRegistrationModal();
   			}
 			}, [user]);
 	return (
