@@ -8,11 +8,12 @@ import {
 	getTablePages,
 	getTablePagination,
 	getTableSorting,
-	// getTableStatus,
+	isTableWaitingForData,
 	getTable,
 } from "../../selectors/tableSelectors";
 import {
 	Row,
+	Resource,
 	reverseTable,
 	setOffset,
 	setSortBy,
@@ -41,11 +42,12 @@ import { TableColumn } from "../../configs/tableConfigs/aclsTableConfig";
 import ButtonLikeAnchor from "./ButtonLikeAnchor";
 import { ModalHandle } from "./modals/Modal";
 import { ParseKeys } from "i18next";
-import { LuChevronDown, LuChevronLeft, LuChevronRight, LuChevronUp } from "react-icons/lu";
+import { LuChevronDown, LuChevronLeft, LuChevronRight, LuChevronUp, LuLoader } from "react-icons/lu";
 import { useLocation } from "react-router";
 import Select, { components, DropdownIndicatorProps } from "react-select";
 import { pageSizeStyles } from "../../utils/componentStyles";
 import { GenericAsyncThunk } from "../../utils/utils";
+import { usePolling } from "../../hooks/usePolling";
 
 export type TemplateMap<T> = {
 	[key: string]: ({ row }: { row: T }) => JSX.Element | JSX.Element[]
@@ -55,10 +57,12 @@ export type TemplateMap<T> = {
  * This component renders the table in the table views of resources
  */
 const Table = <T extends Row, >({
+	resource,
 	templateMap,
 	fetchResource,
 	loadResourceIntoTable,
 }: {
+	resource: Resource,
 	templateMap: TemplateMap<T>
 	fetchResource: GenericAsyncThunk,
 	loadResourceIntoTable: () => AppThunk,
@@ -71,33 +75,20 @@ const Table = <T extends Row, >({
 	const selectAllCheckboxRef = useRef<HTMLInputElement>(null);
 
 	useEffect(() => {
-		// State variable for interrupting the load function
-		let allowLoadIntoTable = true;
-
 		// Clear table of previous data
 		dispatch(resetTableProperties());
+	}, [dispatch, location.hash]);
 
-		// Load resource on mount
-		const loadResource = async () => {
-			// Fetching resources from server
-			await dispatch(fetchResource());
+	// Fetch resources on mount and every 5 seconds after
+	usePolling(async signal => {
+		// Fetching resources from server
+		await dispatch(fetchResource());
 
-			// Load resources into table
-			if (allowLoadIntoTable) {
-				dispatch(loadResourceIntoTable());
-			}
-		};
-		loadResource();
-
-		// Fetch resources every minute
-		const fetchResourceInterval = setInterval(() => { loadResource(); }, 5000);
-
-		return () => {
-			allowLoadIntoTable = false;
-			clearInterval(fetchResourceInterval);
-		};
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [location.hash]);
+		// Load resources into table
+		if (!signal.aborted) {
+			dispatch(loadResourceIntoTable());
+		}
+	}, 5000, [location.hash]);
 
 	const forceDeselectAll = () => {
 		dispatch(changeAllSelected(false));
@@ -149,6 +140,7 @@ const Table = <T extends Row, >({
 				</thead>
 				<tbody>
 					<TableBody
+						resource={resource}
 						templateMap={templateMap}
 					/>
 				</tbody>
@@ -235,6 +227,13 @@ const TableHeadRows = ({ forceDeselectAll }: { forceDeselectAll: () => unknown }
 		dispatch(updatePages());
 	};
 
+	const handleSortKeyDown = (event: React.KeyboardEvent, colName: string) => {
+		if (event.key === "Enter" || event.key === " ") {
+			event.preventDefault();
+			sortByColumn(colName);
+		}
+	};
+
 	return (
 		<>
 			{columns.map((column, key) =>
@@ -245,17 +244,34 @@ const TableHeadRows = ({ forceDeselectAll }: { forceDeselectAll: () => unknown }
 							"col-sort": reverse !== "NONE" && !!sortBy && column.name === sortBy,
 							sortable: true,
 						})}
-						onClick={() => sortByColumn(column.name)}
+						aria-sort={
+							column.name === sortBy
+								? reverse === "ASC"
+									? "ascending"
+									: reverse === "DESC"
+										? "descending"
+										: "none"
+								: "none"
+						}
 					>
-						<span>
+						<span
+							role="button"
+							tabIndex={0}
+							onClick={() => sortByColumn(column.name)}
+							onKeyDown={event => handleSortKeyDown(event, column.name)}
+						>
 							<span>{t(column.label)}</span>
-							<div>
-								<LuChevronUp
-									className={cn("chevron-up", { active: reverse === "ASC" && column.name === sortBy })}
-								/>
-								<LuChevronDown
-									className={cn("chevron-down", { active: reverse === "DESC" && column.name === sortBy })}
-								/>
+							<div className={cn({ "chevron-pair": !(column.name === sortBy && reverse !== "NONE") })}>
+								{!(column.name === sortBy && reverse === "DESC") && (
+									<LuChevronUp
+										className={cn("chevron-up", { active: reverse === "ASC" && column.name === sortBy })}
+									/>
+								)}
+								{!(column.name === sortBy && reverse === "ASC") && (
+									<LuChevronDown
+										className={cn("chevron-down", { active: reverse === "DESC" && column.name === sortBy })}
+									/>
+								)}
 							</div>
 						</span>
 					</th>
@@ -269,29 +285,31 @@ const TableHeadRows = ({ forceDeselectAll }: { forceDeselectAll: () => unknown }
 	);
 };
 
-const TableBody = <T extends Row, >({ templateMap }: { templateMap: TemplateMap<T> }) => {
+const TableBody = <T extends Row, >({ resource, templateMap }: { resource: Resource, templateMap: TemplateMap<T> }) => {
 	const { t } = useTranslation();
 
 	const columnCount = useAppSelector(state => getTableColumns(state).length);
 	const rowCount = useAppSelector(rowsSelectors.selectTotal);
-	// const status = useAppSelector(state => getTableStatus(state));
+	// Whether the table is empty but data is on the way: before or during a fetch, or after a
+	// fetch until its results are loaded into the table. Selected as a boolean, so status
+	// changes during polling don't re-render the rows
+	const isWaitingForData = useAppSelector(state => isTableWaitingForData(state, resource));
 
 	return (
 		<>
-			{status === "loading" && rowCount === 0 ? (
+			{isWaitingForData ? (
 				<tr>
 					<td colSpan={columnCount} style={{ textAlign: "center" }}>
-						<i className="fa fa-spinner fa-spin fa-2x fa-fw" />
+						<LuLoader className="fa-spin" size="2em" />
 					</td>
 				</tr>
-			) : !(status === "loading") && rowCount === 0 ? (
+			) : rowCount === 0 ? (
 				// Show if no results and table is not loading
 				<tr>
 					<td colSpan={columnCount}>{t("TABLE_NO_RESULT")}</td>
 				</tr>
 			) : (
-				!(status === "loading") &&
-				// Repeat for each row in table.rows
+				// Repeat for each row in table.rows, even while newer data is loading
 				<TableRows
 					templateMap={templateMap}
 				/>

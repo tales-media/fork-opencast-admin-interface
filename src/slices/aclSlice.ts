@@ -60,16 +60,28 @@ export type AclTemplate = {
 	organizationId: string,
 }
 
+export type AclDefaults = {
+	"read_enabled": boolean,
+	"write_enabled": boolean,
+	"read_readonly": boolean,
+	"write_readonly": boolean,
+	"default_actions": string[],
+	"keep_on_template_switch_role_prefixes": string[],
+	"display_role_filter_blacklist_prefixes": string[],
+}
+
 type AclsState = {
 	status: "uninitialized" | "loading" | "succeeded" | "failed",
 	error: SerializedError | null,
+	// ID of the most recent fetch, to ignore responses of older overlapping fetches
+	latestRequestId: string,
 	results: AclResult[],
 	columns: TableConfig["columns"],
 	total: number,
 	count: number,
 	offset: number,
 	limit: number,
-	aclDefaults: { [key: string]: string },
+	aclDefaults?: AclDefaults,
 	aclDefaultTemplate?: AclTemplate,
 };
 
@@ -83,13 +95,14 @@ const initialColumns = aclsTableConfig.columns.map(column => ({
 const initialState: AclsState = {
 	status: "uninitialized",
 	error: null,
+	latestRequestId: "",
 	results: [],
 	columns: initialColumns,
 	total: 0,
 	count: 0,
 	offset: 0,
 	limit: 0,
-	aclDefaults: {},
+	aclDefaults: undefined,
 };
 
 export const fetchAcls = createAppAsyncThunk("acls/fetchAcls", async (_, { getState }) => {
@@ -126,9 +139,28 @@ export const fetchAclActions = async () => {
 // fetch defaults for the access policy tab in the details views
 export const fetchAclDefaults = createAppAsyncThunk("acls/fetchAclDefaults", async (_, { getState }) => {
 	const state = getState();
-	const data = await axios.get<{ [key: string]: string }>("/admin-ng/resources/ACL.DEFAULTS.json");
+	const data = await axios.get<{
+		"read_enabled": string,
+		"write_enabled": string,
+		"read_readonly": string,
+		"write_readonly": string,
+		"default_actions": string,
+		"default_template": string,
+		"keep_on_template_switch_role_prefixes": string,
+		"display_role_filter_blacklist_prefixes": string
+	 }>("/admin-ng/resources/ACL.DEFAULTS.json");
 
 	const response = data.data;
+
+	const aclDefaults: AclDefaults = {
+		"read_enabled": response.read_enabled === "true" ? true : false,
+		"write_enabled": response.write_enabled === "true" ? true : false,
+		"read_readonly": response.read_readonly === "true" ? true : false,
+		"write_readonly": response.write_readonly === "true" ? true : false,
+		"default_actions": response.default_actions ? response.default_actions.split(",") : [],
+		"keep_on_template_switch_role_prefixes": response.keep_on_template_switch_role_prefixes ? response.keep_on_template_switch_role_prefixes.split(",") : [],
+		"display_role_filter_blacklist_prefixes": response.display_role_filter_blacklist_prefixes ? response.display_role_filter_blacklist_prefixes.split(",") : [],
+	};
 
 	let defaultTemplate = undefined;
 	// If the a default template id is configured and we haven't fetched the default template
@@ -156,7 +188,7 @@ export const fetchAclDefaults = createAppAsyncThunk("acls/fetchAclDefaults", asy
 		defaultTemplate = template;
 	}
 
-	return { aclDefaults: response, aclDefaultTemplate: defaultTemplate };
+	return { aclDefaults: aclDefaults, aclDefaultTemplate: defaultTemplate };
 });
 
 // fetch all policies of an certain acl template
@@ -309,11 +341,16 @@ const aclsSlice = createSlice({
 	// These are used for thunks
 	extraReducers: builder => {
 		builder
-			.addCase(fetchAcls.pending, state => {
+			.addCase(fetchAcls.pending, (state, action) => {
 				state.status = "loading";
+				state.latestRequestId = action.meta.requestId;
 			})
 			// Pass the generated action creators to `.addCase()`
-			.addCase(fetchAcls.fulfilled, (state, action: PayloadAction<FetchAcls>) => {
+			.addCase(fetchAcls.fulfilled, (state, action) => {
+				// Ignore responses of older fetches that finished after a newer one started
+				if (action.meta.requestId !== state.latestRequestId) {
+					return;
+				}
 				// Same "mutating" update syntax thanks to Immer
 				state.status = "succeeded";
 				const acls = action.payload;
@@ -324,6 +361,10 @@ const aclsSlice = createSlice({
 				state.results = acls.results;
 			})
 			.addCase(fetchAcls.rejected, (state, action) => {
+				// Ignore responses of older fetches that finished after a newer one started
+				if (action.meta.requestId !== state.latestRequestId) {
+					return;
+				}
 				state.status = "failed";
 				state.results = [];
 				state.error = action.error;

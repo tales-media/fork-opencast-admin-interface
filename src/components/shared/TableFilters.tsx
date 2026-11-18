@@ -13,6 +13,7 @@ import {
 	removeTextFilter,
 	resetFilterValues,
 } from "../../slices/tableFilterSlice";
+import { reverseTable } from "../../slices/tableSlice";
 import {
 	goToPage,
 } from "../../thunks/tableThunks";
@@ -117,6 +118,7 @@ const TableFilters = ({
 		let mustApplyChanges = false;
 		if (name === "textFilter") {
 			dispatch(editTextFilter({ text: value, resource: resource }));
+			dispatch(reverseTable("NONE"));
 			mustApplyChanges = true;
 		}
 
@@ -148,7 +150,6 @@ const TableFilters = ({
 	// simply by going to first page and then load resources.
 	// This helps increase performance by reducing the number of calls to load resources.
 	const applyFilterChangesDebounced = async () => {
-		console.log("Applying filter changes with value: " + itemValue);
 		// No matter what, we go to page one.
 		dispatch(goToPage(0));
 		// Reload of resource
